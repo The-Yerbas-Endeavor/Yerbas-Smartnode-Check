@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 *.csv
 *.json
+*.html
 *.log
+history/
 .venv/
 venv/
+.env
