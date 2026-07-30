@@ -3,13 +3,18 @@
 """Small standard-library test suite for the Yerbas smartnode checker."""
 
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 
+MODULE_NAME = "yerbas_smartnode_check"
 MODULE_PATH = Path(__file__).resolve().parents[1] / "yerbas-smartnode-check.py"
-SPEC = importlib.util.spec_from_file_location("yerbas_smartnode_check", MODULE_PATH)
+SPEC = importlib.util.spec_from_file_location(MODULE_NAME, MODULE_PATH)
 assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
+# Python 3.14 dataclasses resolves annotations through sys.modules while the
+# class decorator runs, so register dynamically loaded modules before exec.
+sys.modules[MODULE_NAME] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
