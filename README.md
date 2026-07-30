@@ -68,6 +68,10 @@ Create reports directly in a web directory:
 
 ```bash
 ./yerbas-smartnode-check.py \
+  --cli "$HOME/yerbas/src/yerbas-cli" \
+  --retries 2 \
+  --reverse-dns \
+  --minimum-protocol 70223 \
   --csv /var/www/html/smartnodes/yerbas-smartnodes.csv \
   --json /var/www/html/smartnodes/yerbas-smartnodes.json \
   --html /var/www/html/smartnodes/index.html \
