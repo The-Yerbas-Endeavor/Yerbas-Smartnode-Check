@@ -325,13 +325,12 @@ def build_report(results: list[SmartnodeResult], port: int) -> dict[str, Any]:
     reachable = sum(result.port_open for result in results)
     unreachable = len(results) - reachable
 
-    # Reachability percentage only measures nodes whose RPC status is meaningful
-    # for an active reachability check. UNKNOWN and POSE_BANNED nodes are
-    # intentionally excluded from the percentage denominator.
+    # Reachability percentage only measures Smartnodes whose RPC status is ENABLED.
+    # All other statuses are excluded from the percentage denominator.
     reachability_results = [
         result
         for result in results
-        if result.smartnode_status.upper() not in ("UNKNOWN", "POSE_BANNED")
+        if result.smartnode_status.upper() == "ENABLED"
     ]
     reachability_reachable = sum(result.port_open for result in reachability_results)
     reachability_unreachable = len(reachability_results) - reachability_reachable
@@ -664,7 +663,7 @@ def main() -> int:
     print(f"Reachability      : {summary['reachability_percent']}%")
     print(
         f"Reachability pool : {summary['reachability_eligible']} "
-        f"(excluded {summary['reachability_excluded']} UNKNOWN/POSE_BANNED)"
+        f"(excluded {summary['reachability_excluded']} non-ENABLED)"
     )
     print(f"RPC status ENABLED: {summary['enabled']}")
     print(f"Average latency   : {summary['average_latency_ms']} ms")
