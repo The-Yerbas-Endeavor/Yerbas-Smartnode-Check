@@ -168,6 +168,26 @@ def reverse_dns_lookup(ip: str, enabled: bool) -> str:
     except (socket.herror, socket.gaierror, OSError):
         return ""
 
+def parse_full_maps(value: Any) -> tuple[dict[str, str], dict[str, str]]:
+    status_map: dict[str, str] = {}
+    protocol_map: dict[str, str] = {}
+
+    if not isinstance(value, dict):
+        return status_map, protocol_map
+
+    for outpoint, raw_value in value.items():
+        if not isinstance(raw_value, str):
+            continue
+
+        parts = raw_value.split()
+
+        if len(parts) < 2:
+            continue
+
+        status_map[str(outpoint)] = parts[0]
+        protocol_map[str(outpoint)] = parts[1]
+
+    return status_map, protocol_map
 
 def check_tcp_port(ip: str, port: int, timeout: float, retries: int) -> tuple[bool, float | None, int, str]:
     last_error = ""
@@ -301,17 +321,45 @@ def inspect_smartnode(
 
 
 def build_report(results: list[SmartnodeResult], port: int) -> dict[str, Any]:
+    # Raw port counts continue to include every registered Smartnode.
     reachable = sum(result.port_open for result in results)
+    unreachable = len(results) - reachable
+
+    # Reachability percentage only measures nodes whose RPC status is meaningful
+    # for an active reachability check. UNKNOWN and POSE_BANNED nodes are
+    # intentionally excluded from the percentage denominator.
+    reachability_results = [
+        result
+        for result in results
+        if result.smartnode_status.upper() not in ("UNKNOWN", "POSE_BANNED")
+    ]
+    reachability_reachable = sum(result.port_open for result in reachability_results)
+    reachability_unreachable = len(reachability_results) - reachability_reachable
+    reachability_eligible = len(reachability_results)
+    reachability_excluded = len(results) - reachability_eligible
+    reachability_percent = (
+        round((reachability_reachable / reachability_eligible) * 100, 2)
+        if reachability_eligible
+        else 0
+    )
+
     latencies = [result.latency_ms for result in results if result.latency_ms is not None]
     statuses = Counter(result.smartnode_status.upper() for result in results)
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "network_port": port,
         "summary": {
             "total": len(results),
             "reachable": reachable,
-            "unreachable": len(results) - reachable,
-            "reachability_percent": round((reachable / len(results) * 100), 2) if results else 0,
+            "unreachable": unreachable,
+            "reachability_percent": reachability_percent,
+            "reachability_eligible": reachability_eligible,
+            "reachability_reachable": reachability_reachable,
+            "reachability_unreachable": reachability_unreachable,
+            "reachability_excluded": reachability_excluded,
+            "reachability_excluded_unknown": statuses.get("UNKNOWN", 0),
+            "reachability_excluded_pose_banned": statuses.get("POSE_BANNED", 0),
             "enabled": statuses.get("ENABLED", 0),
             "invalid_addresses": sum(not result.address_valid for result in results),
             "private_or_reserved_ips": sum(result.address_valid and not result.public_ip for result in results),
@@ -323,7 +371,6 @@ def build_report(results: list[SmartnodeResult], port: int) -> dict[str, Any]:
         },
         "smartnodes": [asdict(result) for result in results],
     }
-
 
 def export_csv(results: list[SmartnodeResult], filename: Path) -> None:
     filename.parent.mkdir(parents=True, exist_ok=True)
@@ -435,7 +482,7 @@ def alert_lines(report: dict[str, Any], previous: dict[str, Any] | None, thresho
 
 def send_discord(webhook_url: str, report: dict[str, Any], lines: list[str]) -> None:
     summary = report["summary"]
-    content = "**Yerbas Smartnode Health Alert**\n" + "\n".join(f"• {line}" for line in lines)
+    content = "**Yerbas Smartnode Health Alert**\n" + "\n".join(f"â€¢ {line}" for line in lines)
     content += f"\n\nReachable: {summary['reachable']}/{summary['total']} ({summary['reachability_percent']}%)"
     request = urllib.request.Request(
         webhook_url,
@@ -503,16 +550,54 @@ def main() -> int:
         return 2
 
     try:
-        address_map = normalize_rpc_map(run_cli(arguments.cli, "smartnodelist", "addr"), ("address", "addr"))
+        address_map = normalize_rpc_map(
+            run_cli(arguments.cli, "smartnodelist", "addr"),
+            ("address", "addr"),
+        )
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+
     if not address_map:
-        print("No smartnodes were returned by smartnodelist addr.", file=sys.stderr)
+        print(
+            "No smartnodes were returned by smartnodelist addr.",
+            file=sys.stderr,
+        )
         return 2
 
-    status_map = get_optional_mode(arguments.cli, "status", ("status",))
-    protocol_map = get_optional_mode(arguments.cli, "protocol", ("protocol", "version"))
+    status_map = get_optional_mode(
+        arguments.cli,
+        "status",
+        ("status",),
+    )
+
+    protocol_map = get_optional_mode(
+        arguments.cli,
+        "protocol",
+        ("protocol", "version"),
+    )
+
+    try:
+        full_map = run_cli(
+            arguments.cli,
+            "smartnodelist",
+            "full",
+        )
+
+        full_status_map, full_protocol_map = parse_full_maps(
+            full_map
+        )
+
+        if not status_map:
+            status_map = full_status_map
+
+        for outpoint, protocol in full_protocol_map.items():
+            if not protocol_map.get(outpoint):
+                protocol_map[outpoint] = protocol
+
+    except RuntimeError:
+        pass
+
     parsed_ips: list[str] = []
     for advertised_address in address_map.values():
         try:
@@ -577,6 +662,10 @@ def main() -> int:
     print(f"Port open         : {summary['reachable']}")
     print(f"Port unreachable  : {summary['unreachable']}")
     print(f"Reachability      : {summary['reachability_percent']}%")
+    print(
+        f"Reachability pool : {summary['reachability_eligible']} "
+        f"(excluded {summary['reachability_excluded']} UNKNOWN/POSE_BANNED)"
+    )
     print(f"RPC status ENABLED: {summary['enabled']}")
     print(f"Average latency   : {summary['average_latency_ms']} ms")
     print(f"Wrong port        : {summary['wrong_port']}")
